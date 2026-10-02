@@ -1,0 +1,1229 @@
+// =====================================================
+// FestaBox ERP - Schema de dados
+// =====================================================
+// Provider recomendado: PostgreSQL.
+// Para dev local rápido, troque provider para "sqlite" e
+// DATABASE_URL para "file:./dev.db".
+//
+// Arquitetura preparada para:
+//   - Multi-empresa / filiais
+//   - Módulo fiscal (NFC-e / NF-e / CF-e) - campos já modelados
+//   - Pix dinâmico, TEF, marketplaces
+//   - Estoque multi-depósito
+// =====================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =====================================================
+// Enums
+// =====================================================
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  CASHIER
+  SELLER
+  STOCKIST
+  FINANCIAL
+}
+
+enum PersonType {
+  INDIVIDUAL  // PF
+  COMPANY     // PJ
+}
+
+enum AccountStatus {
+  OPEN
+  PAID
+  PARTIAL
+  OVERDUE
+  CANCELED
+}
+
+enum AccountKind {
+  PAYABLE
+  RECEIVABLE
+}
+
+enum SaleStatus {
+  DRAFT
+  COMPLETED
+  CANCELED
+  RETURNED
+  PARTIALLY_RETURNED
+}
+
+enum PaymentMethodType {
+  CASH
+  PIX
+  DEBIT_CARD
+  CREDIT_CARD
+  VOUCHER
+  TRANSFER
+  CHECK
+  CREDIT_STORE // crediário
+  OTHER
+}
+
+enum CardType {
+  DEBIT
+  CREDIT
+}
+
+enum MovementType {
+  SALE
+  PURCHASE
+  RETURN_SALE
+  RETURN_PURCHASE
+  ADJUST_IN
+  ADJUST_OUT
+  TRANSFER_IN
+  TRANSFER_OUT
+  LOSS
+  DAMAGE
+  INVENTORY
+  INITIAL
+}
+
+enum CashMovementType {
+  OPENING
+  SALE
+  PAYMENT_RECEIVED
+  PAYMENT_PAID
+  SUPPLY        // suprimento
+  BLEED         // sangria
+  EXPENSE
+  OTHER
+  CLOSING
+}
+
+enum ImportItemAction {
+  CREATE
+  UPDATE
+  UPDATE_STOCK
+  UPDATE_COST
+  UPDATE_PRICE
+  SKIP
+}
+
+enum ImportStatus {
+  PENDING
+  REVIEWED
+  APPLIED
+  CANCELED
+}
+
+enum NfeImportMatchStatus {
+  MATCHED
+  NEW
+  IGNORED
+}
+
+enum StockAlertType {
+  LOW
+  OUT
+  NEGATIVE
+  EXPIRING_7
+  EXPIRING_30
+  EXPIRED
+  NO_MOVEMENT
+}
+
+enum PriceTableType {
+  RETAIL
+  WHOLESALE
+  PROMOTION
+  CUSTOM
+}
+
+enum PrinterConnection {
+  USB
+  NETWORK
+  SHARED_WINDOWS
+  BROWSER_PRINT
+}
+
+enum PrinterWidth {
+  MM58
+  MM80
+  LABEL
+}
+
+// =====================================================
+// Tenancy / Multi-empresa
+// =====================================================
+
+model Company {
+  id            String   @id @default(uuid())
+  name          String   // Nome fantasia / identificação (centralizado: FestaBox ERP)
+  tradeName     String?
+  legalName     String?
+  document      String?  // CNPJ
+  stateTax      String?
+  municipalTax String?
+  email         String?
+  phone         String?
+  whatsapp      String?
+  logoUrl       String?
+  address       String?
+  number        String?
+  complement    String?
+  district      String?
+  city          String?
+  state         String?
+  zipCode       String?
+  // Configurações operacionais (fiscal preparado)
+  defaultPrinterId String?
+  defaultPriceTableId String?
+  allowNegativeStock Boolean   @default(false)
+  allowChangePrice   Boolean  @default(true)
+  discountMaxPercent  Decimal  @default(5.00) @db.Decimal(5,2)
+  // Módulo fiscal (preparado, não implementado)
+  taxEnabled Boolean  @default(false)
+  taxEnvironment String? // "dev" | "prod" | "homolog"
+  taxCertExpiresAt DateTime?
+  taxSeries Int?
+  taxLastNumber Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users        User[]
+  products     Product[]
+  customers    Customer[]
+  suppliers    Supplier[]
+  sales        Sale[]
+  purchases    Purchase[]
+  accountsPayable    AccountsPayable[]
+  accountsReceivable AccountsReceivable[]
+  cashRegisters CashRegister[]
+  financialAccounts FinancialAccount[]
+  chartOfAccounts ChartOfAccount[]
+  costCenters  CostCenter[]
+  quotes       Quote[]
+  nfeImports   NfeImport[]
+  printers     Printer[]
+  priceTables  PriceTable[]
+  categories   Category[]
+  brands       Brand[]
+  units        Unit[]
+  paymentMethods PaymentMethod[]
+  cardBrands   CardBrand[]
+  auditLogs    AuditLog[]
+  settings     SystemSetting[]
+  branches     Branch[]
+
+  @@index([document])
+}
+
+model Branch {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  document  String?
+  address   String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+}
+
+// =====================================================
+// Usuários & Permissões
+// =====================================================
+
+model User {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole @default(OPERATOR)
+  active    Boolean  @default(true)
+  avatarUrl String?
+  phone     String?
+  // Permissões granulares opcionais (sobrescreve role padrão)
+  permissions String? // JSON array de permissões
+  lastLoginAt DateTime?
+  resetToken String?
+  resetTokenExp DateTime?
+  pin        String? // PIN curto para PDV
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales        Sale[]
+  purchases    Purchase[]
+  cashRegisters CashRegister[]
+  cashMovements CashMovement[]
+  stockMovements StockMovement[]
+  auditLogs    AuditLog[]
+  sessions     Session[]
+  nfeImports   NfeImport[]
+
+  @@index([companyId, role])
+  @@index([email])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+}
+
+// =====================================================
+// Cadastros base
+// =====================================================
+
+model Category {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  slug      String?
+  description String?
+  parentId  String?
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  parent  Category?  @relation("CategoryParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children Category[] @relation("CategoryParent")
+  products Product[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+}
+
+model Brand {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([companyId, name])
+}
+
+model Unit {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String   // "UN", "CX", "KG", "G", "MT", "LT", "FD", "CT", "PCT"
+  abbreviation String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  products Product[]
+
+  @@unique([companyId, abbreviation])
+}
+
+model Product {
+  id           String   @id @default(uuid())
+  companyId    String
+  internalCode String?
+  sku          String?
+  barcode      String?  // código principal (EAN)
+  name         String
+  description  String?
+  categoryId   String?
+  brandId      String?
+  unitId       String?
+  supplierId   String?
+  // Fiscal (preparado)
+  ncm          String?
+  cest         String?
+  cfop         String?
+  origin       String?
+  icmsCst      String?
+  pisCst       String?
+  cofinsCst    String?
+  ipiCst       String?
+  // Preços
+  costPrice    Decimal  @default(0) @db.Decimal(12,4)
+  salePrice    Decimal  @default(0) @db.Decimal(12,4)
+  wholesalePrice Decimal @default(0) @db.Decimal(12,4)
+  promotionPrice  Decimal @default(0) @db.Decimal(12,4)
+  marginPercent Decimal @default(0) @db.Decimal(5,2)
+  // Controle
+  stockMin      Decimal  @default(0) @db.Decimal(12,4)
+  stockMax      Decimal  @default(0) @db.Decimal(12,4)
+  location      String?  // localização física
+  // Características
+  weight        Decimal? @db.Decimal(12,4)
+  height        Decimal? @db.Decimal(12,4)
+  width         Decimal? @db.Decimal(12,4)
+  length        Decimal? @db.Decimal(12,4)
+  imageUrl      String?
+  // Flags
+  active        Boolean  @default(true)
+  controlLot    Boolean  @default(false)
+  controlExpiry Boolean  @default(false)
+  isKit         Boolean  @default(false)
+  isService     Boolean  @default(false)
+  trackStock    Boolean  @default(true)
+  // Sistema
+  observations String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company  Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  brand    Brand?    @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  unit     Unit?     @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  barcodes        ProductBarcode[]
+  prices          ProductPrice[]
+  kitItems        KitItem[] @relation("KitParent")
+  saleItems       SaleItem[]
+  purchaseItems   PurchaseItem[]
+  stockMovements  StockMovement[]
+  stockLots       StockLot[]
+  stockBalances   StockBalance[]
+  nfeImportItems  NfeImportItem[]
+  quoteItems      QuoteItem[]
+  returnItems     SaleReturnItem[]
+
+  @@unique([companyId, internalCode])
+  @@unique([companyId, sku])
+  @@unique([companyId, barcode])
+  @@index([companyId, name])
+  @@index([companyId, active])
+}
+
+model ProductBarcode {
+  id        String @id @default(uuid())
+  productId String
+  code      String
+  type      String? // EAN13, EAN8, CODE128...
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([code])
+  @@index([productId])
+}
+
+model PriceTable {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  type      PriceTableType @default(RETAIL)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  prices  ProductPrice[]
+
+  @@unique([companyId, name])
+}
+
+model ProductPrice {
+  id           String   @id @default(uuid())
+  productId    String
+  priceTableId String
+  minQty       Decimal  @default(1) @db.Decimal(12,4)
+  price        Decimal  @db.Decimal(12,4)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  priceTable PriceTable @relation(fields: [priceTableId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, priceTableId, minQty])
+}
+
+// =====================================================
+// Kits / Combos
+// =====================================================
+
+model KitItem {
+  id        String @id @default(uuid())
+  kitId     String
+  productId String
+  quantity  Decimal @db.Decimal(12,4)
+
+  kit     Product @relation("KitParent", fields: [kitId], references: [id], onDelete: Cascade)
+  product Product @relation("KitPart", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([kitId, productId])
+}
+
+// =====================================================
+// Clientes & Fornecedores
+// =====================================================
+
+model Customer {
+  id        String   @id @default(uuid())
+  companyId String
+  personType PersonType @default(INDIVIDUAL)
+  name      String
+  tradeName String?
+  document  String? // CPF/CNPJ
+  ie        String? // Inscrição estadual
+  email     String?
+  phone     String?
+  whatsapp  String?
+  address   String?
+  number    String?
+  complement String?
+  district  String?
+  city      String?
+  state     String?
+  zipCode   String?
+  notes     String?
+  creditLimit Decimal @default(0) @db.Decimal(12,2)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sales   Sale[]
+  quotes  Quote[]
+  accountsReceivable AccountsReceivable[]
+
+  @@unique([companyId, document])
+  @@index([companyId, name])
+}
+
+model Supplier {
+  id        String   @id @default(uuid())
+  companyId String
+  legalName String
+  tradeName String?
+  document  String? // CNPJ
+  ie        String?
+  email     String?
+  phone     String?
+  whatsapp  String?
+  contact   String?
+  address   String?
+  number    String?
+  complement String?
+  district  String?
+  city      String?
+  state     String?
+  zipCode   String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  products Product[]
+  purchases Purchase[]
+  accountsPayable AccountsPayable[]
+  nfeImports NfeImport[]
+
+  @@unique([companyId, document])
+  @@index([companyId, legalName])
+}
+
+// =====================================================
+// PDV / Vendas
+// =====================================================
+
+model Sale {
+  id          String   @id @default(uuid())
+  companyId   String
+  number      Int      // sequencial por empresa
+  customerId  String?
+  userId      String
+  cashierId   String?  // operador do caixa
+  status      SaleStatus @default(DRAFT)
+  subtotal    Decimal  @default(0) @db.Decimal(12,2)
+  discount    Decimal  @default(0) @db.Decimal(12,2)
+  addition    Decimal  @default(0) @db.Decimal(12,2)
+  total       Decimal  @default(0) @db.Decimal(12,2)
+  paid        Decimal  @default(0) @db.Decimal(12,2)
+  change      Decimal  @default(0) @db.Decimal(12,2)
+  notes       String?
+  // Fiscal (preparado)
+  taxDocumentType String? // "NFCE" | "NFE" | "CFE" | null
+  taxDocumentNumber String?
+  taxDocumentStatus String? // "pending" | "authorized" | "rejected" | "canceled"
+  completedAt DateTime?
+  canceledAt DateTime?
+  cancelReason String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  user     User    @relation(fields: [userId], references: [id])
+  items    SaleItem[]
+  payments SalePayment[]
+  returns  SaleReturn[]
+  cashMovement CashMovement?
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+  @@index([companyId, createdAt])
+}
+
+model SaleItem {
+  id          String @id @default(uuid())
+  saleId      String
+  productId   String
+  quantity    Decimal @db.Decimal(12,4)
+  unitPrice   Decimal @db.Decimal(12,4)
+  originalPrice Decimal? @db.Decimal(12,4) // antes do desconto
+  discount    Decimal @default(0) @db.Decimal(12,2)
+  addition    Decimal @default(0) @db.Decimal(12,2)
+  total       Decimal @db.Decimal(12,2)
+  notes       String?
+  // Snapshot fiscal (preparado)
+  ncm         String?
+  cfop         String?
+  icmsValue   Decimal? @db.Decimal(12,4)
+  createdAt DateTime @default(now())
+
+  sale    Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+  returnItems SaleReturnItem[]
+
+  @@index([saleId])
+}
+
+model SalePayment {
+  id          String @id @default(uuid())
+  saleId      String
+  method      PaymentMethodType
+  methodName  String?         // nome customizado (ex: "Visa Débito")
+  amount      Decimal @db.Decimal(12,2)
+  received    Decimal @default(0) @db.Decimal(12,2)
+  change      Decimal @default(0) @db.Decimal(12,2)
+  // Crédito loja
+  installments Int @default(1)
+  cardBrandId String?
+  cardType    CardType?
+  // Identificadores externos (preparado)
+  txid        String?
+  authCode    String?
+  createdAt   DateTime @default(now())
+
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  cardBrand CardBrand? @relation(fields: [cardBrandId], references: [id], onDelete: SetNull)
+  accountsReceivable AccountsReceivable?
+
+  @@index([saleId])
+}
+
+model SaleReturn {
+  id          String   @id @default(uuid())
+  saleId      String
+  userId      String
+  reason      String?
+  total       Decimal  @default(0) @db.Decimal(12,2)
+  createdAt   DateTime @default(now())
+
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  items SaleReturnItem[]
+
+  @@index([saleId])
+}
+
+model SaleReturnItem {
+  id           String @id @default(uuid())
+  returnId     String
+  saleItemId   String
+  productId    String
+  quantity     Decimal @db.Decimal(12,4)
+  unitPrice    Decimal @db.Decimal(12,4)
+  total        Decimal @db.Decimal(12,2)
+
+  saleReturn SaleReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem   SaleItem   @relation(fields: [saleItemId], references: [id])
+  product    Product    @relation(fields: [productId], references: [id])
+
+  @@index([returnId])
+}
+
+// =====================================================
+// Compras
+// =====================================================
+
+model Purchase {
+  id          String   @id @default(uuid())
+  companyId   String
+  number      Int
+  supplierId  String
+  userId      String
+  status      AccountStatus @default(OPEN)
+  invoiceNumber String?
+  invoiceKey   String? // chave NF-e
+  invoiceDate  DateTime?
+  subtotal    Decimal @default(0) @db.Decimal(12,2)
+  discount    Decimal @default(0) @db.Decimal(12,2)
+  addition    Decimal @default(0) @db.Decimal(12,2)
+  freight     Decimal @default(0) @db.Decimal(12,2)
+  insurance   Decimal @default(0) @db.Decimal(12,2)
+  otherCosts  Decimal @default(0) @db.Decimal(12,2)
+  total       Decimal @default(0) @db.Decimal(12,2)
+  notes       String?
+  importedFromNfeId String?
+  completedAt DateTime?
+  canceledAt DateTime?
+  cancelReason String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+  items PurchaseItem[]
+  accountsPayable AccountsPayable[]
+  nfeImport NfeImport? @relation(fields: [importedFromNfeId], references: [id], onDelete: SetNull)
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+}
+
+model PurchaseItem {
+  id          String @id @default(uuid())
+  purchaseId  String
+  productId   String
+  quantity    Decimal @db.Decimal(12,4)
+  unitCost    Decimal @db.Decimal(12,4)
+  discount    Decimal @default(0) @db.Decimal(12,2)
+  addition    Decimal @default(0) @db.Decimal(12,2)
+  total       Decimal @db.Decimal(12,2)
+  ncm         String?
+  cfop        String?
+  createdAt DateTime @default(now())
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@index([purchaseId])
+}
+
+// =====================================================
+// Importação NF-e
+// =====================================================
+
+model NfeImport {
+  id           String   @id @default(uuid())
+  companyId    String
+  userId       String
+  supplierId   String?
+  status       ImportStatus @default(PENDING)
+  // Dados da NF-e
+  invoiceNumber String?
+  invoiceKey   String?
+  invoiceDate  DateTime?
+  invoiceValue Decimal? @db.Decimal(12,2)
+  // XML original
+  xmlRaw       String?
+  // Resultado
+  purchaseId   String?
+  matchedCount Int     @default(0)
+  newCount     Int     @default(0)
+  skippedCount Int     @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  items   NfeImportItem[]
+  purchase Purchase?
+  purchases Purchase[]
+
+  @@index([companyId, status])
+  @@index([invoiceKey])
+}
+
+model NfeImportItem {
+  id              String   @id @default(uuid())
+  importId        String
+  productId       String?
+  // Dados do XML
+  ean             String?
+  supplierCode    String?
+  name            String
+  ncm             String?
+  cfop            String?
+  unit            String?
+  quantity        Decimal  @db.Decimal(12,4)
+  unitCost        Decimal  @db.Decimal(12,4)
+  total           Decimal  @db.Decimal(12,4)
+  // Ação definida na conferência
+  matchStatus     NfeImportMatchStatus @default(NEW)
+  action          ImportItemAction @default(CREATE)
+  newSalePrice    Decimal? @db.Decimal(12,4)
+  marginPercent   Decimal? @db.Decimal(5,2)
+  createdAt DateTime @default(now())
+
+  import NfeImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([importId])
+}
+
+// =====================================================
+// Estoque - Movimentações, Saldos, Lotes
+// =====================================================
+
+model StockBalance {
+  id        String @id @default(uuid())
+  productId String
+  // Permitido multi-depósito futuramente
+  branchId  String?
+  quantity  Decimal @default(0) @db.Decimal(12,4)
+  reserved  Decimal @default(0) @db.Decimal(12,4)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, branchId])
+  @@index([productId])
+}
+
+model StockMovement {
+  id          String @id @default(uuid())
+  productId   String
+  userId      String
+  type        MovementType
+  quantity    Decimal @db.Decimal(12,4)  // positiva para entrada, negativa para saída
+  previousQty Decimal  @db.Decimal(12,4)
+  newQty      Decimal  @db.Decimal(12,4)
+  unitCost    Decimal? @db.Decimal(12,4)
+  reason      String?
+  originType  String?  // "SALE" | "PURCHASE" | "MANUAL" | "IMPORT_NFE" | "RETURN"
+  originId    String?
+  lotId       String?
+  createdAt   DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+  lot     StockLot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@index([productId, createdAt])
+  @@index([type])
+}
+
+model StockLot {
+  id          String @id @default(uuid())
+  productId   String
+  lotNumber   String
+  manufactureDate DateTime?
+  expiryDate  DateTime?
+  quantity    Decimal  @default(0) @db.Decimal(12,4)
+  supplierId  String?
+  notes       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  movements StockMovement[]
+
+  @@unique([productId, lotNumber])
+  @@index([expiryDate])
+}
+
+model StockAlert {
+  id        String @id @default(uuid())
+  productId String
+  type      StockAlertType
+  message   String
+  resolved  Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([resolved, createdAt])
+}
+
+// =====================================================
+// Caixa
+// =====================================================
+
+model CashRegister {
+  id          String @id @default(uuid())
+  companyId   String
+  userId      String
+  status      AccountStatus @default(OPEN)
+  openingAmount Decimal @default(0) @db.Decimal(12,2)
+  closingAmount Decimal? @db.Decimal(12,2)
+  informedAmount Decimal? @db.Decimal(12,2)
+  difference Decimal? @db.Decimal(12,2)
+  notes       String?
+  openedAt   DateTime @default(now())
+  closedAt   DateTime?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+  movements CashMovement[]
+
+  @@index([companyId, status])
+  @@index([userId])
+}
+
+model CashMovement {
+  id          String @id @default(uuid())
+  cashRegisterId String
+  userId      String
+  type        CashMovementType
+  amount      Decimal @db.Decimal(12,2)
+  reason      String?
+  saleId      String? @unique
+  paymentMethod String?
+  createdAt   DateTime @default(now())
+
+  cashRegister CashRegister @relation(fields: [cashRegisterId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id])
+  sale         Sale?        @relation(fields: [saleId], references: [id], onDelete: SetNull)
+
+  @@index([cashRegisterId])
+}
+
+// =====================================================
+// Financeiro
+// =====================================================
+
+model AccountsPayable {
+  id          String   @id @default(uuid())
+  companyId   String
+  supplierId  String?
+  purchaseId  String?
+  description String
+  category    String?
+  costCenterId String?
+  financialAccountId String?
+  paymentMethodId String?
+  amount      Decimal  @db.Decimal(12,2)
+  paid        Decimal  @default(0) @db.Decimal(12,2)
+  status      AccountStatus @default(OPEN)
+  issueDate   DateTime @default(now())
+  dueDate     DateTime
+  paidAt      DateTime?
+  notes       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchase Purchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  installments PayableInstallment[]
+  costCenter CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+  financialAccount FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: SetNull)
+  paymentMethod PaymentMethod? @relation(fields: [paymentMethodId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status])
+  @@index([dueDate])
+}
+
+model PayableInstallment {
+  id          String   @id @default(uuid())
+  payableId   String
+  number      Int
+  amount      Decimal  @db.Decimal(12,2)
+  dueDate     DateTime
+  paid        Decimal  @default(0) @db.Decimal(12,2)
+  paidAt      DateTime?
+  status      AccountStatus @default(OPEN)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payable AccountsPayable @relation(fields: [payableId], references: [id], onDelete: Cascade)
+
+  @@index([payableId])
+}
+
+model AccountsReceivable {
+  id          String   @id @default(uuid())
+  companyId   String
+  customerId  String?
+  saleId      String?
+  salePaymentId String?
+  description String
+  category    String?
+  financialAccountId String?
+  amount      Decimal  @db.Decimal(12,2)
+  paid        Decimal  @default(0) @db.Decimal(12,2)
+  status      AccountStatus @default(OPEN)
+  issueDate   DateTime @default(now())
+  dueDate     DateTime
+  paidAt      DateTime?
+  notes       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  receivableInstallments ReceivableInstallment[]
+  financialAccount FinancialAccount? @relation(fields: [financialAccountId], references: [id], onDelete: SetNull)
+  salePayment SalePayment? @relation(fields: [salePaymentId], references: [id], onDelete: SetNull)
+
+  @@index([companyId, status])
+  @@index([dueDate])
+}
+
+model ReceivableInstallment {
+  id          String   @id @default(uuid())
+  receivableId String
+  number      Int
+  amount      Decimal  @db.Decimal(12,2)
+  dueDate     DateTime
+  paid        Decimal  @default(0) @db.Decimal(12,2)
+  paidAt      DateTime?
+  status      AccountStatus @default(OPEN)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  receivable AccountsReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@index([receivableId])
+}
+
+model FinancialAccount {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String   // "Caixa Loja", "Itaú", "Sicoob", "Nubank", "Pix"
+  type      String   // "CASH" | "BANK" | "PIX" | "CARD" | "DIGITAL"
+  bank      String?
+  agency    String?
+  account   String?
+  pixKey    String?
+  pixKeyType String? // "CPF" | "CNPJ" | "EMAIL" | "PHONE" | "RANDOM"
+  initialBalance Decimal @default(0) @db.Decimal(12,2)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountsPayable AccountsPayable[]
+  accountsReceivable AccountsReceivable[]
+
+  @@unique([companyId, name])
+}
+
+model ChartOfAccount {
+  id        String   @id @default(uuid())
+  companyId String
+  code      String
+  name      String
+  type      String   // "REVENUE" | "EXPENSE"
+  parentId  String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  parent  ChartOfAccount? @relation("ChartParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children ChartOfAccount[] @relation("ChartParent")
+
+  @@unique([companyId, code])
+}
+
+model CostCenter {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  description String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountsPayable AccountsPayable[]
+
+  @@unique([companyId, name])
+}
+
+// =====================================================
+// Pagamentos & Cartões
+// =====================================================
+
+model PaymentMethod {
+  id        String   @id @default(uuid())
+  companyId String
+  name      String
+  type      PaymentMethodType
+  active    Boolean  @default(true)
+  // Crédito
+  maxInstallments Int @default(1)
+  // Configurações adicionais
+  settleDays Int @default(0) // prazo de recebimento
+  feePercent Decimal @default(0) @db.Decimal(5,2)
+  pixKey    String?  // se for PIX
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  accountsPayable AccountsPayable[]
+
+  @@unique([companyId, name])
+}
+
+model CardBrand {
+  id        String @id @default(uuid())
+  companyId String
+  name      String   // Visa, Master, Elo, Hipercard, Amex, etc.
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  payments SalePayment[]
+
+  @@unique([companyId, name])
+}
+
+// =====================================================
+// Orçamentos
+// =====================================================
+
+model Quote {
+  id          String   @id @default(uuid())
+  companyId   String
+  number      Int
+  customerId  String?
+  userId      String
+  status      String   @default("OPEN") // OPEN | APPROVED | CANCELED | CONVERTED
+  subtotal    Decimal  @default(0) @db.Decimal(12,2)
+  discount    Decimal  @default(0) @db.Decimal(12,2)
+  addition    Decimal  @default(0) @db.Decimal(12,2)
+  total       Decimal  @default(0) @db.Decimal(12,2)
+  notes       String?
+  validUntil  DateTime?
+  convertedSaleId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  customer Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  items QuoteItem[]
+
+  @@unique([companyId, number])
+  @@index([companyId, status])
+}
+
+model QuoteItem {
+  id          String @id @default(uuid())
+  quoteId     String
+  productId   String
+  quantity    Decimal @db.Decimal(12,4)
+  unitPrice   Decimal @db.Decimal(12,4)
+  discount    Decimal @default(0) @db.Decimal(12,2)
+  total       Decimal @db.Decimal(12,2)
+  notes       String?
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([quoteId])
+}
+
+// =====================================================
+// Impressoras
+// =====================================================
+
+model Printer {
+  id        String @id @default(uuid())
+  companyId String
+  name      String
+  profile   String  // "ESC_POS_58MM" | "ESC_POS_80MM" | "WINDOWS_GENERIC" | "LABEL_GENERIC"
+  connection PrinterConnection
+  // Conexão
+  devicePath String? // USB device id
+  host       String? // IP
+  port       Int?
+  shareName  String? // \\PC\impressora
+  // Configurações
+  width      PrinterWidth @default(MM80)
+  charsPerLine Int @default(42)
+  marginTop  Int @default(0)
+  marginLeft Int @default(0)
+  autocut    Boolean @default(true)
+  printLogo  Boolean @default(false)
+  boldTitle  Boolean @default(true)
+  centerText Boolean @default(false)
+  fontSize   Int @default(1) // 1..8 ESC/POS
+  printQr    Boolean @default(false)
+  printBarcode Boolean @default(false)
+  // Uso
+  isDefaultPdv Boolean @default(false)
+  isDefaultAdmin Boolean @default(false)
+  isLabelPrinter Boolean @default(false)
+  active Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, name])
+}
+
+// =====================================================
+// Auditoria
+// =====================================================
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  companyId String
+  userId    String?
+  entity    String   // "Product" | "Sale" | "Customer" ...
+  entityId  String
+  action    String   // "create" | "update" | "delete" | "cancel" | "login" ...
+  before    String?  // JSON snapshot
+  after     String?  // JSON snapshot
+  ip        String?
+  userAgent String?
+  reason    String?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([companyId, createdAt])
+}
+
+// =====================================================
+// Configurações do sistema
+// =====================================================
+
+model SystemSetting {
+  id        String @id @default(uuid())
+  companyId String
+  key       String
+  value     String
+  type      String? // "string" | "number" | "boolean" | "json"
+  description String?
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, key])
+}

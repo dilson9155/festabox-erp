@@ -1,0 +1,11 @@
+{
+  "name": "FestaBox ERP",
+  "short_name": "FestaBox",
+  "description": "Sistema de Gestao Comercial e PDV",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#e11d48",
+  "orientation": "portrait-primary",
+  "icons": []
+}
